@@ -1,0 +1,98 @@
+# StudentControl v2 — Docker
+#
+#   Telegram ──https──> tunnel ──> frontend (nginx :80) ──/api──> gateway (:3000) ──> postgres
+#                                                                    └──> ADMIN SAYT API (/api/bot/*)
+#   bot — faqat "Ilovani ochish" tugmasi
+#
+# v1 bilan yonma-yon ishlaydi: boshqa nom (studentcontrol-v2), boshqa portlar, alohida baza.
+# Ishga tushirish:  ./run.sh up      Sozlamalar: v2/.env  (namuna: .env.example)
+name: studentcontrol-v2
+
+services:
+  postgres:
+    image: docker.io/library/postgres:17-alpine
+    container_name: sc2-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-student}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-student}
+      POSTGRES_DB: ${POSTGRES_DB:-studentcontrol_v2}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Birinchi ishga tushishda jadvallar shu fayldan yaratiladi (keyin gateway har safar yangilaydi)
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    container_name: sc2-gateway
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN:?BOT_TOKEN ni v2/.env ga yozing}
+      PORT: 3000
+      DATABASE_URL: postgres://${POSTGRES_USER:-student}:${POSTGRES_PASSWORD:-student}@postgres:5432/${POSTGRES_DB:-studentcontrol_v2}
+      HEMIS_URL: ${HEMIS_URL:-https://student.jizpi.uz/rest/v1}
+      JWT_SECRET: ${JWT_SECRET:-}
+      DEVELOPER_IDS: ${DEVELOPER_IDS:-}
+      # Admin sayt API si (bo'sh bo'lsa — sinov uchun ichki mock)
+      ADMIN_API_URL: ${ADMIN_API_URL:-}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      ADMIN_API_TIMEOUT: ${ADMIN_API_TIMEOUT:-30}
+      ADMIN_LINK_ID: ${ADMIN_LINK_ID:-student_id_number}
+      ADMIN_API_SEND_HEMIS_PHOTO: ${ADMIN_API_SEND_HEMIS_PHOTO:-false}
+      CHECK_COOLDOWN: ${CHECK_COOLDOWN:-30}
+      # Faqat rasmiy Telegram (Plus Messenger va boshqa norasmiy ilovalar bloklanadi). Bo'sh — standart ro'yxat
+      TG_OFFICIAL_APPS: ${TG_OFFICIAL_APPS:-}
+      TG_CLIENT_STRICT: ${TG_CLIENT_STRICT:-false}
+      MOCK_LAT: ${MOCK_LAT:-40.13}
+      MOCK_LNG: ${MOCK_LNG:-67.836}
+      MOCK_RADIUS_M: ${MOCK_RADIUS_M:-300}
+      LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-90}   # loglar necha kun saqlanadi
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-3001}:3000"   # http://localhost:3001/api/health
+    # Admin sayt shu kompyuterda (localhost:8080) bo'lsa: ADMIN_API_URL=http://host.containers.internal:8080
+    extra_hosts:
+      - "host.containers.internal:host-gateway"
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: sc2-frontend
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-8082}:80"
+    depends_on:
+      - gateway
+    restart: unless-stopped
+
+  tunnel:
+    image: docker.io/cloudflare/cloudflared:latest
+    container_name: sc2-tunnel
+    command: tunnel --no-autoupdate --metrics 0.0.0.0:2000 --url http://frontend:80
+    depends_on:
+      - frontend
+    restart: unless-stopped
+
+  bot:
+    build: ./bot
+    container_name: sc2-bot
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN:?BOT_TOKEN ni v2/.env ga yozing}
+      WEBAPP_URL: ${WEBAPP_URL:-}
+      TUNNEL_METRICS: tunnel:2000
+    depends_on:
+      - tunnel
+    restart: unless-stopped
+
+volumes:
+  pgdata:   # faqat loglar

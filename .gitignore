@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.env
+backups/
+v2
+bot

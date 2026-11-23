@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+/* Telegram mavzusi ranglari (kunduzgi/tungi rejim avtomatik).
+   Ishlatish: bg-tg-bg, text-tg-text, text-tg-hint, bg-tg-button ... */
+@theme inline {
+  --color-tg-bg: var(--tg-theme-bg-color, #ffffff);
+  --color-tg-text: var(--tg-theme-text-color, #111111);
+  --color-tg-hint: var(--tg-theme-hint-color, #8a8a8a);
+  --color-tg-card: var(--tg-theme-secondary-bg-color, #f1f1f4);
+  --color-tg-button: var(--tg-theme-button-color, #2481cc);
+  --color-tg-button-text: var(--tg-theme-button-text-color, #ffffff);
+}
+
+body {
+  @apply bg-tg-bg text-tg-text antialiased;
+  font-family: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+}

@@ -1,0 +1,14 @@
+{
+  "name": "studentcontrol-v2-gateway",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "description": "v2: login (HEMIS) + tashqi API ga so'rov + loglar. Qaror chiqarmaydi — natijani API beradi",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  }
+}
