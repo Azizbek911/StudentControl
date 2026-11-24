@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { api, ApiError } from "./api";
 import { tokens } from "./auth";
+import Loader from "./components/Loader";
 import { getDeviceId } from "./device";
 import { isInTelegram, isMobilePlatform, openExternal, tg } from "./telegram";
 import type { Student } from "./types";
@@ -10,7 +11,7 @@ import Login from "./pages/Login";
 // Loglar sahifasi faqat developer uchun yuklanadi
 const DevApp = lazy(() => import("./dev/DevApp"));
 
-// v2 da faqat 2 ta rol: talaba va developer
+// Faqat 2 ta rol: talaba va developer
 type State =
   | { kind: "loading" }
   | { kind: "blocked"; title: string; text: string; link?: { label: string; url: string } }
@@ -37,7 +38,7 @@ const unofficial = (app: string | null): State => ({
 
 const Loading = () => (
   <main className="flex min-h-dvh items-center justify-center">
-    <p className="text-tg-hint">Yuklanmoqda…</p>
+    <Loader />
   </main>
 );
 

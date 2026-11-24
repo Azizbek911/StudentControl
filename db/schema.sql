@@ -19,10 +19,12 @@ CREATE TABLE IF NOT EXISTS logs (
   id            bigserial    PRIMARY KEY,
   created_at    timestamptz  NOT NULL DEFAULT now(),
   level         varchar(5)   NOT NULL CHECK (level IN ('info', 'warn', 'error')),
-  -- check | link | today | login | auth | system
+  -- check | link | today | login | auth | face | system
   kind          varchar(16)  NOT NULL,
   -- check:  present | late | out_of_range | suspicious | rejected  (admin API qarori)
   --         refused (API rad etdi: 404/409/400) | api_error | unknown | bad_request | too_often | no_hemis_photo
+  --         no_face | face_mismatch (yuz tekshiruvi: selfida yuz yo'q / HEMIS rasmiga mos emas — qayta suratga olish so'raldi)
+  -- face:   face_down (face servisi yoki HEMIS rasmi ishlamadi — davomat yuz tekshiruvisiz yuborildi)
   -- link:   ok | already | not_found | conflict | api_error
   -- today:  api_error
   -- login:  ok | wrong_password | hemis_down | not_mobile

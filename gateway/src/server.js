@@ -4,13 +4,18 @@
 //   1) Login: HEMIS login/parol -> /account/me -> admin API POST /api/bot/link { hemisId, telegramId }
 //      Talaba profili bazaga yozilmaydi — imzolangan token ichida yuradi. Parol saqlanmaydi.
 //   2) Bosh sahifa: admin API GET /api/bot/today
-//   3) Davomat: joylashuv + selfi -> admin API POST /api/bot/checkin (selfi diskka yozilmaydi)
+//   3) Davomat: joylashuv + selfi -> yuz tekshiruvi (face servisi, selfi HEMIS rasmiga solishtiriladi)
+//      -> admin API POST /api/bot/checkin (selfi diskka yozilmaydi)
 //   4) Har bir voqea logs jadvaliga -> developer Mini App da ko'radi
+//
+// Admin sayt javob bermasa talabaga xato matni ko'rsatilmaydi: /today -> { retry: true },
+// /check -> 502 + code "api_unavailable". Ilova "Yuklanmoqda" animatsiyasini ko'rsatib, o'zi qayta so'raydi.
 
 import http from "node:http";
 import { linkStudent, sendCheckin, todayTask } from "./admin-api.js";
 import { config } from "./config.js";
 import { migrate, one, q } from "./db.js";
+import { checkFace, faceEnabled, warmFace } from "./face.js";
 import { hemisLogin, hemisMe, hemisPhoto, profileFromHemis } from "./hemis.js";
 import { clientIp, fileOf, HttpError, readForm, readJson, sendJson } from "./http.js";
 import { log } from "./log.js";
@@ -84,6 +89,13 @@ async function requireOfficialClient(ctx) {
   throw new HttpError(403, UNOFFICIAL_TEXT, { code: "unofficial_client" });
 }
 
+/** Talabaga yuz tekshiruvi natijasi (FACE_MODE=block): qayta suratga olish kerak */
+const FACE_TEXT = {
+  no_face: "Rasmda yuzingiz aniqlanmadi. Yorug' joyda, yuzingizni ovalga to'g'rilab qayta suratga oling.",
+  face_mismatch:
+    "Rasmdagi yuz HEMIS dagi rasmingizga mos kelmadi. Ko'zoynak va niqobsiz, yorug' joyda, kameraga to'g'ri qarab qayta suratga oling.",
+};
+
 const who = (st, telegramId, ip) => ({ studentId: st.id, studentName: st.fullName ?? st.login, telegramId, ip });
 const short = (r) => ({ httpStatus: r.httpStatus, response: r.body?.slice(0, 500) ?? null, ms: r.ms });
 
@@ -141,7 +153,7 @@ async function link(st, telegramId, base) {
 
 async function health() {
   await q("SELECT 1");
-  return { ok: true, api: apiName() };
+  return { ok: true, api: apiName(), face: faceEnabled() ? config.faceMode : "off" };
 }
 
 /** Ilova ochilganda: developer yoki talaba */
@@ -197,6 +209,7 @@ async function login(ctx) {
   if (!l.ok && !l.transient) throw new HttpError(l.status, l.error);
   if (l.group) st.group = l.group; // admin saytdagi guruh nomi
 
+  warmFace(st.image); // HEMIS rasmidagi yuz belgisi oldindan (birinchi davomat tezroq bo'lsin)
   await log({ ...b, kind: "login", status: "ok", message: st.fullName });
   return { ...issueTokens(st, deviceId), student: st };
 }
@@ -215,24 +228,28 @@ async function me(ctx) {
 
 // ---------------- Talaba: bugun ----------------
 
-/** GET /api/today -> { task | null, message | null, checks } — vazifa admin API dan, ro'yxat loglardan */
+/**
+ * GET /api/today -> { task | null, message | null, retry?, checks } — vazifa admin API dan, ro'yxat loglardan.
+ * retry: true — admin sayt javob bermadi; ilova "Yuklanmoqda" ko'rsatib, birozdan keyin qayta so'raydi
+ */
 async function today(ctx) {
   const st = studentAuth(ctx);
   const telegramId = requireTelegram(ctx);
   const base = who(st, telegramId, ctx.ip);
   const checks = await todayChecks(st.id);
+  const retry = { task: null, message: null, retry: true, checks };
 
   let t = await todayTask(telegramId);
   if (t.httpStatus === 404) {
     // Admin saytda bog'lanmagan (yoki bog'lanish o'chirilgan) — bog'lab, qayta so'raymiz
     const l = await link(st, telegramId, base);
-    if (!l.ok) return { task: null, message: l.error, checks };
+    if (!l.ok) return l.transient ? retry : { task: null, message: l.error, checks };
     t = await todayTask(telegramId);
   }
   if (t.ok) return { task: t.data, message: null, checks };
   if (t.httpStatus === 409 || t.httpStatus === 404) return { task: null, message: t.error, checks };
   await log({ ...base, level: "error", kind: "today", status: "api_error", message: t.error, details: short(t) });
-  return { task: null, message: "Admin sayt vaqtincha javob bermayapti", checks };
+  return retry;
 }
 
 async function todayChecks(studentId) {
@@ -256,6 +273,8 @@ async function todayChecks(studentId) {
 // ---------------- Talaba: davomat ----------------
 
 const lastCheck = new Map(); // HEMIS ID -> vaqt (ms); faqat xotirada
+/** Davomat yozilmadi (yuz mos emas / admin sayt javob bermadi) — to'liq kutish shart emas, 5 soniya yetarli */
+const softCooldown = (id) => lastCheck.set(id, Date.now() - Math.max(0, config.checkCooldownSec - 5) * 1000);
 
 /** POST /api/check (multipart: type, latitude, longitude, accuracy, locatedAt, selfie) -> admin API /checkin */
 async function check(ctx) {
@@ -294,6 +313,27 @@ async function check(ctx) {
   }
   lastCheck.set(st.id, Date.now());
 
+  // Yuz tekshiruvi: selfi HEMIS rasmiga solishtiriladi. Servis ishlamasa — davomat baribir yuboriladi
+  const face = await checkFace(st.image, selfie);
+  if (face.status === "error") {
+    await log({ ...base, kind: "face", level: "error", status: "face_down", message: face.reason, details: { face } });
+  }
+  const faceProblem = face.status === "no_face" ? "no_face" : face.status === "mismatch" ? "face_mismatch" : null;
+  if (faceProblem && config.faceMode === "block") {
+    softCooldown(st.id);
+    await log({
+      ...base,
+      level: "warn",
+      status: faceProblem,
+      message:
+        faceProblem === "no_face"
+          ? "Selfida yuz topilmadi — qayta suratga olish so'raldi"
+          : `Yuz HEMIS rasmiga mos emas (${face.similarity} < ${face.threshold}) — qayta suratga olish so'raldi`,
+      details: { type, latitude, longitude, accuracy, face, selfieBytes: selfie.length },
+    });
+    throw new HttpError(422, FACE_TEXT[faceProblem], { code: faceProblem });
+  }
+
   // HEMIS rasmi — hujjatda yo'q maydon, faqat ADMIN_API_SEND_HEMIS_PHOTO=true bo'lsa (saqlanmaydi)
   let hemis = null;
   if (config.adminSendHemisPhoto) {
@@ -306,10 +346,12 @@ async function check(ctx) {
 
   const payload = { telegramId, lat: latitude, lng: longitude, accuracy, sentAt, type, photo: { buf: selfie, type: selfieType }, hemisPhoto: hemis };
   let r = await sendCheckin(payload);
+  let linkDown = false;
   if (r.httpStatus === 404) {
     // Bog'lanmagan bo'lsa — bog'lab, bir marta qayta yuboramiz
     const l = await link(st, telegramId, base);
     if (l.ok) r = await sendCheckin(payload);
+    else linkDown = Boolean(l.transient);
   }
 
   const d = r.ok ? r.data : null;
@@ -317,22 +359,25 @@ async function check(ctx) {
   // refused = admin API rad etdi (bog'lanmagan, joy yo'q, bugun allaqachon belgilangan ...)
   const status = r.ok
     ? (STATUS_OF[String(d.status).toUpperCase()] ?? "unknown")
-    : [400, 404, 409].includes(r.httpStatus)
+    : [400, 404, 409].includes(r.httpStatus) && !linkDown
       ? "refused"
       : "api_error";
   const inside = status === "present" || status === "late" ? true : status === "out_of_range" ? false : null;
   const level = status === "api_error" || status === "unknown" ? "error" : status === "present" || status === "late" ? "info" : "warn";
   const kindText = type === "CHECK_OUT" ? "Ketish" : "Kelish";
+  // FACE_MODE=log: yuz muammosi davomatni to'xtatmaydi, faqat log matnida ko'rinadi
+  const faceNote = faceProblem ? ` · yuz: ${faceProblem === "no_face" ? "topilmadi" : `mos emas (${face.similarity})`}` : "";
 
   await log({
     ...base,
-    level,
+    level: faceProblem && level === "info" ? "warn" : level,
     status,
-    message: r.ok
-      ? `${kindText}: ${d.status}${d.distanceM != null ? ` · ${d.distanceM} m` : ""}${notes.length ? ` · ${notes.join("; ")}` : ""}`
-      : r.httpStatus === 401
-        ? `${r.error} — ADMIN_API_KEY ni tekshiring`
-        : `${kindText}: ${r.error}`,
+    message:
+      (r.ok
+        ? `${kindText}: ${d.status}${d.distanceM != null ? ` · ${d.distanceM} m` : ""}${notes.length ? ` · ${notes.join("; ")}` : ""}`
+        : r.httpStatus === 401
+          ? `${r.error} — ADMIN_API_KEY ni tekshiring`
+          : `${kindText}: ${r.error}`) + faceNote,
     details: {
       type,
       latitude,
@@ -349,11 +394,16 @@ async function check(ctx) {
       ...short(r),
       selfieBytes: selfie.length,
       hemisPhotoSent: Boolean(hemis),
+      face: face.status === "off" ? null : face,
     },
   });
 
   if (status === "refused") throw new HttpError(409, r.error);
-  if (status === "api_error") throw new HttpError(502, "Admin sayt javob bermadi. Birozdan keyin qayta urinib ko'ring.");
+  if (status === "api_error") {
+    // Davomat yozilmadi — ilova "Yuklanmoqda" ko'rsatib, o'zi qayta yuboradi (5 soniyadan keyin)
+    softCooldown(st.id);
+    throw new HttpError(502, "Yuklanmoqda", { code: "api_unavailable" });
+  }
   return {
     type,
     status,
@@ -472,12 +522,19 @@ await migrate();
 server.requestTimeout = 120_000;
 server.listen(config.port, () => {
   const api = config.adminApiMock ? `MOCK (ichki, radius ${config.mock.radiusM} m)` : config.adminApiUrl;
-  console.log(`v2 gateway :${config.port} — admin API: ${api}, developerlar: ${config.developerIds.length}`);
+  const face = faceEnabled() ? `${config.faceMode} (${config.faceUrl}, chegara ${config.faceThreshold})` : "o'chiq";
+  console.log(`Gateway :${config.port} — admin API: ${api}, yuz tekshiruvi: ${face}, developerlar: ${config.developerIds.length}`);
   log({
     kind: "system",
     status: "started",
     message: "Gateway ishga tushdi",
-    details: { api: apiName(), linkId: config.adminLinkIdField, sendHemisPhoto: config.adminSendHemisPhoto, developers: config.developerIds.length },
+    details: {
+      api: apiName(),
+      linkId: config.adminLinkIdField,
+      sendHemisPhoto: config.adminSendHemisPhoto,
+      face: faceEnabled() ? { mode: config.faceMode, threshold: config.faceThreshold } : "off",
+      developers: config.developerIds.length,
+    },
   });
 });
 cleanup();

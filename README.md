@@ -70,12 +70,42 @@ Talaba Mini App ni faqat rasmiy Telegram ilovasida ochishi mumkin. Plus Messenge
 - **Sarlavha kelmasa.** Ba'zi eski Android WebView larda sarlavha kelmasligi mumkin. Standart holatda bunday so'rov o'tkaziladi, kirish logida esa `client: null` bo'ladi. Qat'iy rejim uchun `TG_CLIENT_STRICT=true` qo'ying, bunda sarlavhasiz Android so'rovlari ham bloklanadi. Uni yoqishdan oldin loglarda rasmiy Telegram foydalanuvchilarida `client` to'ldirilganini tekshiring.
 - **Soxtalashtirish.** Sarlavhani ilova o'zi yuboradi. Maxsus o'zgartirilgan ilova uni soxtalashtirishi mumkin. Bu Plus Messenger kabi oddiy norasmiy ilovalarga qarshi to'siq, kriptografik kafolat emas.
 
+### Yuz tekshiruvi
+
+Talaba davomat yuborganda gateway selfini uning HEMIS dagi rasmiga solishtiradi. Buning uchun v1 dagi `face` servisi ishlatiladi (`face/`, Python + OpenCV: YuNet yuzni topadi, SFace yuz belgisini oladi).
+
+1. Talaba kirganda gateway HEMIS rasmini yuklab, undagi yuz belgisini (128 son) oladi va xotirada saqlaydi. Har davomatda HEMIS rasmi qayta yuklanmaydi.
+2. Davomatda selfidagi yuz belgisi olinadi va HEMIS rasminikiga solishtiriladi (kosinus o'xshashlik).
+3. O'xshashlik `FACE_THRESHOLD` dan (standart 0.363, OpenCV tavsiyasi) past bo'lsa — boshqa odam.
+
+| Holat | `FACE_MODE=block` (standart) | `FACE_MODE=log` |
+|---|---|---|
+| Selfida yuz yo'q | qayta suratga olish so'raladi, admin saytga yuborilmaydi | yuboriladi, logda «yuz: topilmadi» |
+| Yuz HEMIS rasmiga mos emas | qayta suratga olish so'raladi, admin saytga yuborilmaydi | yuboriladi, logda «yuz: mos emas» |
+| Mos | yuboriladi | yuboriladi |
+| HEMIS da rasm yo'q yoki unda yuz topilmadi | yuboriladi (tekshirib bo'lmaydi) | yuboriladi |
+| face servisi yoki HEMIS ishlamadi | yuboriladi, logda `face/face_down` | yuboriladi |
+
+- Qayta suratga olishda 30 soniya kutish shart emas: 5 soniyadan keyin yuborsa bo'ladi.
+- Natija har bir davomat logining `details.face` maydonida: `status`, `similarity`, `faces` (selfidagi yuzlar soni).
+- `FACE_MODE=off` — tekshiruv o'chiq.
+- Selfi, HEMIS rasmi va yuz belgilari diskka ham, bazaga ham yozilmaydi. `face` konteyneri tashqariga port ochmaydi.
+- Haqiqiy talabalar bilan ishga tushirgandan keyin loglarda `face_mismatch` ni kuzating. O'z odami rad etilayotgan bo'lsa (HEMIS rasmi eski yoki sifatsiz), `FACE_THRESHOLD` ni pasaytiring (masalan 0.30) yoki `FACE_MODE=log` qo'ying.
+
+### Admin sayt javob bermasa
+
+Talabaga xato matni ko'rsatilmaydi. Uning o'rniga «Yuklanmoqda» animatsiyasi chiqadi va ilova so'rovni o'zi qayta yuboradi: avval 5, keyin 8, 12, so'ng har 15 soniyada.
+- **Bosh sahifa.** `/api/today` javobida `retry: true` keladi. Admin sayt tiklanishi bilan bugungi joy chiqadi.
+- **Davomat.** `/api/check` `502` va `code: "api_unavailable"` qaytaradi. Ilova shu selfi bilan qayta yuboradi. Joylashuv 60 soniyadan eski bo'lsa, yuborishdan oldin yangilanadi. Talaba «Orqaga» tugmasi bilan to'xtatishi mumkin.
+- Xato developer loglarida avvalgidek yoziladi: `today/api_error`, `check/api_error`.
+
 **HEMIS rasmi.** Hujjatdagi `/checkin` da HEMIS rasmi uchun maydon yo'q. Shuning uchun u standart holatda yuborilmaydi. Admin sayt qabul qilsa: `ADMIN_API_SEND_HEMIS_PHOTO=true` (u `hemisPhoto` fayl maydonida yuboriladi).
 
 ## Tuzilishi
 
 ```
 Telegram ─https─> tunnel ─> frontend (nginx) ─/api─> gateway ─> postgres
+                                                        ├─> face (yuz tekshiruvi, ichki)
                                                         └─> ADMIN SAYT API  (X-API-KEY)
 bot — faqat "Ilovani ochish" tugmasi va /id
 ```
@@ -83,7 +113,8 @@ bot — faqat "Ilovani ochish" tugmasi va /id
 | Papka | Nima |
 |---|---|
 | `frontend/` | Mini App (React). Talaba: login, bugungi joy, kelish/ketish (xarita + selfi), natija. Developer: loglar |
-| `gateway/` | Kichik Node server. Vazifalari: HEMIS login, admin API ga uzatish, loglarni yozish |
+| `gateway/` | Kichik Node server. Vazifalari: HEMIS login, yuz tekshiruvi, admin API ga uzatish, loglarni yozish |
+| `face/` | Yuz servisi (Python, OpenCV YuNet + SFace). v1 dagi bilan bir xil. Faqat gateway murojaat qiladi |
 | `bot/` | Mini App tugmasi va `/id` buyrug'i |
 | `db/schema.sql` | Baza sxemasi (bitta fayl) |
 | `docker-compose.yml`, `run.sh` | Docker va boshqaruv skripti |
@@ -122,6 +153,9 @@ Bu sozlamalar `.env` ga yozilmasa, standart qiymat ishlatiladi. O'zgartirish ker
 | `CHECK_COOLDOWN` | `30` | ikki davomat orasidagi kutish (soniya) |
 | `TG_OFFICIAL_APPS` | `org.telegram.messenger,org.telegram.messenger.web,org.telegram.messenger.beta,org.thunderdog.challegram` | ruxsat etilgan Telegram ilovalari (paket nomlari). Telegram X ni taqiqlash uchun ro'yxatdan olib tashlang |
 | `TG_CLIENT_STRICT` | `false` | `true`: Android da ilova nomi (`X-Requested-With`) kelmasa ham bloklash |
+| `FACE_MODE` | `block` | yuz tekshiruvi: `block` (mos kelmasa qayta suratga olish), `log` (faqat logga), `off` |
+| `FACE_THRESHOLD` | `0.363` | yuz o'xshashligi chegarasi: pastroq — yumshoqroq, balandroq — qattiqroq |
+| `FACE_TIMEOUT` | `20` | face servisi javobini kutish (soniya). Javob bo'lmasa davomat tekshiruvsiz yuboriladi |
 | `MOCK_LAT`, `MOCK_LNG`, `MOCK_RADIUS_M` | `40.13`, `67.836`, `300` | mock rejimdagi amaliyot joyi |
 | `LOG_RETENTION_DAYS` | `90` | loglar necha kun saqlanadi |
 | `WEBAPP_URL` | bo'sh (tunnel) | doimiy domen |
@@ -205,7 +239,8 @@ Log tafsilotida ko'rinadi:
 
 | Tur | Statuslar |
 |---|---|
-| `check` | `present`, `late`, `out_of_range`, `suspicious`, `rejected`, `refused` (API rad etdi: 404/409/400), `api_error`, `unknown`, `bad_request`, `not_linked`, `no_hemis_photo`, `too_often` |
+| `check` | `present`, `late`, `out_of_range`, `suspicious`, `rejected`, `refused` (API rad etdi: 404/409/400), `api_error`, `unknown`, `bad_request`, `not_linked`, `no_hemis_photo`, `too_often`, `no_face` (selfida yuz yo'q), `face_mismatch` (yuz HEMIS rasmiga mos emas) |
+| `face` | `face_down` (face servisi yoki HEMIS rasmi ishlamadi, davomat tekshiruvsiz yuborildi) |
 | `link` | `ok`, `already`, `not_found`, `conflict`, `api_error` |
 | `today` | `api_error` |
 | `login` | `ok`, `wrong_password`, `device_taken`, `hemis_down`, `not_mobile`, `hemis_sync_failed` |

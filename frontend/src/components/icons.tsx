@@ -96,6 +96,15 @@ export const QuestionIcon: Icon = (p) => (
   </Svg>
 );
 
+/** Yuz tekshiruvi (qayta suratga olish kerak) */
+export const ScanFaceIcon: Icon = (p) => (
+  <Svg {...p}>
+    <path d="M3 8V6a3 3 0 0 1 3-3h2M16 3h2a3 3 0 0 1 3 3v2M21 16v2a3 3 0 0 1-3 3h-2M8 21H6a3 3 0 0 1-3-3v-2" />
+    <path d="M9 9.5v1M15 9.5v1" />
+    <path d="M9 15c1.7 1.3 4.3 1.3 6 0" />
+  </Svg>
+);
+
 /** Qabul qilinmadi / yuborilmadi */
 export const AlertIcon: Icon = (p) => (
   <Svg {...p}>

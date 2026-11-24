@@ -70,6 +70,8 @@ export interface TodayInfo {
   task: Task | null;
   /** Vazifa yo'q bo'lsa — sababi (masalan "bugun joy biriktirilmagan") */
   message: string | null;
+  /** true — admin sayt hozir javob bermadi: "Yuklanmoqda" ko'rsatib, birozdan keyin qayta so'raladi */
+  retry?: boolean;
   checks: TodayCheck[];
 }
 

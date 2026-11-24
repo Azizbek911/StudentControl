@@ -78,6 +78,16 @@ export async function api<T>(path: string, init: RequestInit = {}, opts: { auth?
   return data as T;
 }
 
+/**
+ * Server (yoki admin sayt) hozir javob bermadi — xato ko'rsatilmaydi, "Yuklanmoqda" bilan qayta so'raladi.
+ * 0 — tarmoq, 502/503/504 — gateway yoki admin sayt ishlamayapti
+ */
+export const isRetryable = (e: unknown) =>
+  e instanceof ApiError && (e.code === "api_unavailable" || [0, 502, 503, 504].includes(e.status));
+
+/** Qayta urinishlar orasidagi kutish (ms): 5, 8, 12, 15, 15 ... soniya (+ tasodifiy 0–1 s, hamma bir vaqtda urinmasin) */
+export const retryDelay = (attempt: number) => ([5, 8, 12][attempt] ?? 15) * 1000 + Math.random() * 1000;
+
 /** Fayl (rasm) yuklash — imzo header'lari bilan; <img src> header yubora olmaydi, shuning uchun blob orqali */
 export async function apiBlob(path: string): Promise<Blob> {
   const res = await send(path, {}, true);

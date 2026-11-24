@@ -1,6 +1,7 @@
 # StudentControl v2 — Docker
 #
 #   Telegram ──https──> tunnel ──> frontend (nginx :80) ──/api──> gateway (:3000) ──> postgres
+#                                                                    ├──> face (:8000, yuz tekshiruvi)
 #                                                                    └──> ADMIN SAYT API (/api/bot/*)
 #   bot — faqat "Ilovani ochish" tugmasi
 #
@@ -51,6 +52,11 @@ services:
       # Faqat rasmiy Telegram (Plus Messenger va boshqa norasmiy ilovalar bloklanadi). Bo'sh — standart ro'yxat
       TG_OFFICIAL_APPS: ${TG_OFFICIAL_APPS:-}
       TG_CLIENT_STRICT: ${TG_CLIENT_STRICT:-false}
+      # Yuz tekshiruvi: selfi HEMIS rasmiga solishtiriladi. block | log | off (README)
+      FACE_URL: http://face:8000
+      FACE_MODE: ${FACE_MODE:-block}
+      FACE_THRESHOLD: ${FACE_THRESHOLD:-0.363}
+      FACE_TIMEOUT: ${FACE_TIMEOUT:-20}
       MOCK_LAT: ${MOCK_LAT:-40.13}
       MOCK_LNG: ${MOCK_LNG:-67.836}
       MOCK_RADIUS_M: ${MOCK_RADIUS_M:-300}
@@ -64,6 +70,14 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      face:
+        condition: service_started
+    restart: unless-stopped
+
+  face:
+    build: ./face
+    container_name: sc2-face
+    # Tashqariga port ochilmaydi: faqat gateway murojaat qiladi. Rasmlar va yuz belgilari saqlanmaydi
     restart: unless-stopped
 
   frontend:

@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
-import { api, ApiError } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { api, ApiError, isRetryable, retryDelay } from "../api";
 import Camera, { type Photo } from "../components/Camera";
-import { ArrowLeftIcon, MapPinIcon } from "../components/icons";
+import { ArrowLeftIcon, MapPinIcon, ScanFaceIcon } from "../components/icons";
+import { FaceScan } from "../components/Loader";
 import { getLocation, LocationError, openLocationSettings, POOR_ACCURACY, type Position } from "../location";
 import { tg } from "../telegram";
 import { STATUS, TYPE_LABEL } from "../status";
@@ -13,9 +14,15 @@ type Step = "location" | "selfie" | "send" | "result";
 /** Admin sayt joylashuv aniqlanganidan 120 soniyadan keyin kelsa "shubhali" qiladi — yuborishda yangilanadi */
 type Located = Position & { at: number };
 
+/** Yuz tekshiruvi qayta suratga olishni so'radi (selfida yuz yo'q / HEMIS rasmiga mos emas) */
+const FACE_CODES = ["no_face", "face_mismatch"];
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 /**
  * 1) Joylashuv (xaritada ko'rinadi)  2) Old kamera rasmi  3) Yuborish
- * Gateway Telegram ID ni (imzolangan initData dan) qo'shib admin sayt API siga uzatadi.
+ * Gateway selfini HEMIS rasmiga solishtiradi (yuz tekshiruvi), so'ng Telegram ID ni (imzolangan initData dan)
+ * qo'shib admin sayt API siga uzatadi. Admin sayt javob bermasa — "Yuklanmoqda" ko'rsatib, o'zi qayta yuboradi.
  */
 export default function CheckIn({
   type,
@@ -34,11 +41,18 @@ export default function CheckIn({
   const [locError, setLocError] = useState<LocationError | null>(null);
   const [selfie, setSelfie] = useState<Photo | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [faceError, setFaceError] = useState<string | null>(null);
+  // Admin sayt javob bermayapti — qayta yuborilmoqda (talaba "Orqaga" bilan to'xtatishi mumkin)
+  const [retrying, setRetrying] = useState(false);
   const [result, setResult] = useState<CheckResult | null>(null);
+  // Har bir yuborish tsiklining raqami: sahifa yopilsa yoki qayta boshlansa, eski tsikl to'xtaydi
+  const sendRun = useRef(0);
 
   useEffect(() => () => {
     if (selfie) URL.revokeObjectURL(selfie.url);
   }, [selfie]);
+
+  useEffect(() => () => void sendRun.current++, []);
 
   async function locate() {
     setLocating(true);
@@ -60,31 +74,56 @@ export default function CheckIn({
 
   async function send() {
     if (!selfie || !position) return;
+    const run = ++sendRun.current;
+    const stale = () => run !== sendRun.current;
     setStep("send");
     setSendError(null);
-    try {
-      // Joylashuv eskirgan bo'lsa (selfi uzoq davom etgan) — yuborishdan oldin yangilaymiz
-      let pos = position;
-      if (Date.now() - pos.at > 60_000) {
-        pos = await getLocation()
-          .then((p) => ({ ...p, at: Date.now() }))
-          .catch(() => position);
+    setFaceError(null);
+    setRetrying(false);
+    let pos = position;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        // Joylashuv eskirgan bo'lsa (selfi yoki qayta urinishlar uzoq davom etgan) — yuborishdan oldin yangilaymiz
+        if (Date.now() - pos.at > 60_000) {
+          const prev = pos;
+          pos = await getLocation()
+            .then((p) => ({ ...p, at: Date.now() }))
+            .catch(() => prev);
+        }
+        const form = new FormData();
+        form.append("type", type);
+        form.append("latitude", String(pos.latitude));
+        form.append("longitude", String(pos.longitude));
+        form.append("accuracy", String(pos.accuracy));
+        form.append("locatedAt", String(pos.at));
+        form.append("selfie", selfie.blob, "selfie.jpg");
+        const r = await api<CheckResult>("/check", { method: "POST", body: form });
+        if (stale()) return;
+        setResult(r);
+        tg?.HapticFeedback?.notificationOccurred(r.inside ? "success" : r.inside === false ? "error" : "warning");
+        setStep("result");
+        return;
+      } catch (e) {
+        if (stale()) return;
+        // Admin sayt (yoki server) javob bermadi — xato ko'rsatmaymiz, "Yuklanmoqda" bilan qayta yuboramiz
+        if (isRetryable(e)) {
+          setRetrying(true);
+          await sleep(retryDelay(attempt));
+          if (stale()) return;
+          continue;
+        }
+        tg?.HapticFeedback?.notificationOccurred("error");
+        // Yuz tekshiruvi o'tmadi — selfi bosqichiga qaytib, qayta suratga olinadi
+        if (e instanceof ApiError && e.code && FACE_CODES.includes(e.code)) {
+          setSelfie(null);
+          setFaceError(e.message);
+          setStep("selfie");
+          return;
+        }
+        setSendError(e instanceof Error ? e.message : "Xatolik yuz berdi");
+        if (e instanceof ApiError && e.status === 401) onCancel();
+        return;
       }
-      const form = new FormData();
-      form.append("type", type);
-      form.append("latitude", String(pos.latitude));
-      form.append("longitude", String(pos.longitude));
-      form.append("accuracy", String(pos.accuracy));
-      form.append("locatedAt", String(pos.at));
-      form.append("selfie", selfie.blob, "selfie.jpg");
-      const r = await api<CheckResult>("/check", { method: "POST", body: form });
-      setResult(r);
-      tg?.HapticFeedback?.notificationOccurred(r.inside ? "success" : r.inside === false ? "error" : "warning");
-      setStep("result");
-    } catch (e) {
-      tg?.HapticFeedback?.notificationOccurred("error");
-      setSendError(e instanceof Error ? e.message : "Xatolik yuz berdi");
-      if (e instanceof ApiError && e.status === 401) onCancel();
     }
   }
 
@@ -165,7 +204,7 @@ export default function CheckIn({
       <button
         onClick={onCancel}
         className="flex items-center gap-1 py-2 text-sm font-medium text-tg-button"
-        disabled={step === "send" && !sendError}
+        disabled={step === "send" && !sendError && !retrying}
       >
         <ArrowLeftIcon className="size-4" />
         Orqaga
@@ -245,6 +284,12 @@ export default function CheckIn({
           <p className="mt-1 text-sm text-tg-hint">
             Old kamera bilan, yuzingiz ovalga to'liq tushadigan qilib, yorug' joyda. Ko'zoynak va niqobsiz.
           </p>
+          {faceError && (
+            <div className="mt-4 flex items-start gap-2.5 rounded-2xl bg-amber-500/12 p-4 text-sm text-amber-700 dark:text-amber-400">
+              <ScanFaceIcon className="mt-px size-5" />
+              <span>{faceError}</span>
+            </div>
+          )}
           <div className="mt-5">
             {selfie ? (
               <img src={selfie.url} alt="" className="aspect-[3/4] w-full rounded-2xl object-cover" />
@@ -287,10 +332,7 @@ export default function CheckIn({
               </div>
             </>
           ) : (
-            <>
-              <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-tg-hint/25 border-t-tg-button" />
-              <p className="mt-5 text-tg-hint">Tekshirilmoqda…</p>
-            </>
+            <FaceScan label={retrying ? "Yuklanmoqda" : "Tekshirilmoqda"} />
           )}
         </section>
       )}

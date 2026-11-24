@@ -60,6 +60,19 @@ export const config = {
   /** true: Android da ilova nomi (X-Requested-With) kelmasa ham bloklanadi (eski WebView). iOS da bu sarlavha hech qachon bo'lmaydi */
   clientStrict: env.TG_CLIENT_STRICT === "true",
 
+  // ---- Yuz tekshiruvi (face servisi: OpenCV YuNet + SFace) — selfi HEMIS rasmiga solishtiriladi ----
+  /** face servisi manzili (Docker: http://face:8000). Bo'sh bo'lsa — yuz tekshiruvi o'chiq */
+  faceUrl: (env.FACE_URL ?? "").trim().replace(/\/+$/, ""),
+  /**
+   * block — selfida yuz bo'lmasa yoki HEMIS rasmiga mos kelmasa, talaba qayta suratga oladi (admin saytga yuborilmaydi)
+   * log   — faqat logga yoziladi, davomat baribir yuboriladi
+   * off   — o'chiq
+   */
+  faceMode: ["block", "log", "off"].includes(env.FACE_MODE) ? env.FACE_MODE : "block",
+  /** Kosinus o'xshashlik chegarasi: shundan past — boshqa odam (OpenCV tavsiyasi: 0.363) */
+  faceThreshold: Number(env.FACE_THRESHOLD ?? 0.363),
+  faceTimeoutMs: Number(env.FACE_TIMEOUT ?? 20) * 1000,
+
   logRetentionDays: Number(env.LOG_RETENTION_DAYS ?? 90),
   initDataMaxAge: 24 * 60 * 60,
   jwtSecret: env.JWT_SECRET || crypto.createHash("sha256").update(`v2-jwt:${botToken}`).digest("hex"),

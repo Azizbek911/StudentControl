@@ -27,6 +27,9 @@ const STATUS_LABEL: Record<string, string> = {
   not_mobile: "Telefon emas",
   not_telegram: "Telegram emas",
   unofficial_client: "Norasmiy Telegram",
+  no_face: "Selfida yuz yo'q",
+  face_mismatch: "Yuz mos emas",
+  face_down: "Yuz servisi ishlamadi",
   started: "Ishga tushdi",
   error: "Server xatosi",
 };

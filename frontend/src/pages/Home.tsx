@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
-import { api } from "../api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, isRetryable, retryDelay } from "../api";
 import { CheckIcon, ClockIcon, FlagIcon, GraduationCapIcon, MapPinIcon } from "../components/icons";
+import Loader from "../components/Loader";
 import { STATUS, TYPE_LABEL } from "../status";
 import { confirmDialog } from "../telegram";
 import type { CheckType, Student, TodayInfo } from "../types";
@@ -10,17 +11,36 @@ export default function Home({ student, onLogout }: { student: Student; onLogout
   const [checking, setChecking] = useState<CheckType | null>(null);
   const [info, setInfo] = useState<TodayInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Admin sayt (yoki server) javob bermayapti — xato o'rniga "Yuklanmoqda", o'zi qayta so'raydi
+  const [waiting, setWaiting] = useState(false);
+  const attempt = useRef(0);
+  const timer = useRef<number | undefined>(undefined);
 
-  const load = useCallback(() => {
+  const load = useCallback(function run() {
+    window.clearTimeout(timer.current);
+    const again = () => {
+      setWaiting(true);
+      timer.current = window.setTimeout(run, retryDelay(attempt.current++));
+    };
     api<TodayInfo>("/today")
       .then((d) => {
         setInfo(d);
         setError(null);
+        if (d.retry) return again();
+        attempt.current = 0;
+        setWaiting(false);
       })
-      .catch((e: Error) => setError(e.message));
+      .catch((e: unknown) => {
+        if (isRetryable(e)) return again();
+        setWaiting(false);
+        setError(e instanceof Error ? e.message : "Xatolik yuz berdi");
+      });
   }, []);
 
-  useEffect(load, [load]);
+  useEffect(() => {
+    load();
+    return () => window.clearTimeout(timer.current);
+  }, [load]);
 
   if (checking) {
     const close = () => {
@@ -54,9 +74,13 @@ export default function Home({ student, onLogout }: { student: Student; onLogout
       </header>
 
       {error && <p className="mt-6 rounded-xl bg-red-500/10 p-3 text-sm text-red-600">{error}</p>}
-      {!info && !error && <p className="mt-6 text-sm text-tg-hint">Yuklanmoqda…</p>}
+      {!error && (!info || waiting) && (
+        <section className="mt-6 flex justify-center rounded-2xl bg-tg-card px-5 py-10">
+          <Loader />
+        </section>
+      )}
 
-      {info && (
+      {info && !waiting && (
         <section className="mt-6 rounded-2xl bg-tg-card p-5">
           <h2 className="text-sm font-semibold text-tg-hint">BUGUNGI AMALIYOT JOYI</h2>
           {task ? (
